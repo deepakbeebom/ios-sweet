@@ -59,6 +59,7 @@ struct ucd {
 static struct utrd utrl[32] __attribute__((aligned(1024)));
 static struct ucd ucd __attribute__((aligned(128)));
 static uint8_t data[2 * BLOCK] __attribute__((aligned(4096)));
+static int ufs_ours;	/* our transfer request list is live */
 
 static uint64_t ticks(void)
 {
@@ -227,6 +228,7 @@ void test_ufs(void)
 		con_str("UFS", "list base not taken: stop");
 		return;
 	}
+	ufs_ours = 1;
 
 	uint32_t ocs = 0, st = 0, rc;
 	static const uint8_t tur[6] = { 0x00 };
@@ -264,3 +266,141 @@ void test_ufs(void)
 		return;
 	list_partitions(elba, nent);
 }
+
+#ifdef G0Q
+/*
+ * g0q milestone 4: why does every command end in CHECK CONDITION (boot 4)?
+ * Lists the logical units, decodes sense data per unit and, if units are
+ * NOT READY, puts the device into the Active power mode the way Linux's
+ * ufshcd does (START STOP UNIT, POWER CONDITION 1, to the UFS Device W-LUN).
+ * Still no SCSI WRITE anywhere.
+ */
+#define WLUN_REPORT_LUNS	0x81	/* UPIU LUN field for W-LUN 0xC101 */
+#define WLUN_UFS_DEVICE		0xd0	/* UPIU LUN field for W-LUN 0xC150 */
+
+/* key<<16 | asc<<8 | ascq from the last response, or 0xffffff if none. */
+static uint32_t last_sense(void)
+{
+	uint32_t slen = (uint32_t)ucd.resp[32] << 8 | ucd.resp[33];
+	if (slen < 14)
+		return 0xffffff;
+	const uint8_t *sd = ucd.resp + 34;
+	return (uint32_t)(sd[2] & 0xf) << 16 | (uint32_t)sd[12] << 8 | sd[13];
+}
+
+static void result(const char *label, uint32_t rc, uint32_t ocs, uint32_t st)
+{
+	if (rc == 4 && st == 2)
+		con_hex2(label, "CHECK key/asc/q=", last_sense(), 0, 0);
+	else
+		con_hex2(label, "rc=", rc, "ocs/st=", ocs << 8 | st);
+}
+
+static uint32_t tur(uint8_t lun, const char *label)
+{
+	static const uint8_t cdb[6] = { 0x00 };
+	uint32_t ocs = 0, st = 0, rc = 0, sense = 0;
+	/* Unit attentions are reported once each: retry a few. */
+	for (int i = 0; i < 4; i++) {
+		rc = scsi(lun, cdb, sizeof(cdb), 0, 0, &ocs, &st);
+		sense = rc == 4 && st == 2 ? last_sense() : 0;
+		if (!rc || (sense >> 16) != 6)
+			break;
+	}
+	result(label, rc, ocs, st);
+	return rc ? (sense ? sense : 0xff000000u | rc) : 0;
+}
+
+static void capacity(uint8_t lun)
+{
+	static const uint8_t cdb[10] = { 0x25 };
+	uint32_t ocs = 0, st = 0;
+	uint32_t rc = scsi(lun, cdb, sizeof(cdb), data, 8, &ocs, &st);
+	if (rc)
+		result("  cap", rc, ocs, st);
+	else
+		con_hex2("  cap", "lastlba=", be32(data), "blk=", be32(data + 4));
+}
+
+static void inquiry(uint8_t lun, char *label)
+{
+	static const uint8_t cdb[6] = { 0x12, 0, 0, 0, 36, 0 };
+	uint32_t ocs = 0, st = 0;
+	uint32_t rc = scsi(lun, cdb, sizeof(cdb), data, 36, &ocs, &st);
+	if (rc) {
+		result(label, rc, ocs, st);
+		return;
+	}
+	char prod[25];
+	for (int i = 0; i < 24; i++) {	/* vendor (8) + product (16) */
+		uint8_t c = data[8 + i];
+		prod[i] = c >= 32 && c < 127 ? c : '.';
+	}
+	prod[24] = 0;
+	con_str(label, prod);
+}
+
+void test_ufs_luns(void)
+{
+	if (!ufs_ours) {
+		con_str("UFS LUNS", "no request list: skip");
+		return;
+	}
+	con_skip();
+
+	/* REPORT LUNS (select report 0: logical units) */
+	static const uint8_t rl[12] = { 0xa0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0 };
+	uint32_t ocs = 0, st = 0;
+	uint32_t rc = 0;
+	for (int i = 0; i < 3; i++) {
+		rc = scsi(WLUN_REPORT_LUNS, rl, sizeof(rl), data, 64, &ocs, &st);
+		if (!rc || !(rc == 4 && st == 2 && (last_sense() >> 16) == 6))
+			break;
+	}
+	uint32_t mask = 0;
+	if (rc) {
+		result("REPORTLUN", rc, ocs, st);
+		mask = 0xff;	/* fall back to LUNs 0..7 */
+	} else {
+		uint32_t n = be32(data) / 8;
+		for (uint32_t i = 0; i < n && i < 7; i++)
+			if (data[8 + i * 8 + 1] < 8)
+				mask |= 1u << data[8 + i * 8 + 1];
+		con_hex2("REPORTLUN", "count=", n, "mask=", mask);
+	}
+
+	int not_ready = 0;
+	for (uint8_t lun = 0; lun < 8; lun++) {
+		if (!(mask & (1u << lun)))
+			continue;
+		char label[] = "LUN0";
+		label[3] = '0' + lun;
+		inquiry(lun, label);
+		uint32_t t = tur(lun, "  tur");
+		if ((t >> 16) == 2)
+			not_ready = 1;
+		if (!t)
+			capacity(lun);
+	}
+
+	if (!not_ready)
+		return;
+	con_skip();
+	/* START STOP UNIT, POWER CONDITION = 1 (Active), as ufshcd_set_dev_pwr_mode */
+	static const uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
+	for (int i = 0; i < 3; i++) {
+		rc = scsi(WLUN_UFS_DEVICE, ssu, sizeof(ssu), 0, 0, &ocs, &st);
+		if (!rc || !(rc == 4 && st == 2 && (last_sense() >> 16) == 6))
+			break;
+	}
+	result("SSU ACTIVE", rc, ocs, st);
+	for (uint8_t lun = 0; lun < 8; lun++) {
+		if (!(mask & (1u << lun)))
+			continue;
+		char label[] = "LUN0 tur";
+		label[3] = '0' + lun;
+		if (!tur(lun, label))
+			capacity(lun);
+	}
+}
+#endif
