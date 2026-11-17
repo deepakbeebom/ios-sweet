@@ -76,6 +76,38 @@ static int magic_ok(const char *m)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
+#ifdef G0Q
+/*
+ * Galaxy S22+: boot image header v4. The bootloader's initrd is the vendor
+ * ramdisk (from the stock vendor_boot, ~21 MB, size not a multiple of 8)
+ * followed by ours, so the payload is somewhere inside and usually not
+ * 8-byte aligned. Find it bytewise and copy it to an aligned staging area
+ * in free RAM below the kernel bank (bank 3: reserved regions end at
+ * 0x80b700000, kernel RAM starts at 0x840000000).
+ */
+#define G0Q_STAGE	0x820000000UL
+#define G0Q_STAGE_MAX	0x20000000UL	/* 512 MiB, ends at 0x840000000 */
+
+static uintptr_t find_payload(uintptr_t lo, uintptr_t hi)
+{
+	for (uintptr_t a = lo; a + 8 <= hi; a++) {
+		if (*(volatile const char *)a != 'S')
+			continue;
+		if (magic_ok((const char *)a))
+			return a;
+	}
+	return 0;
+}
+
+static void copy8(uintptr_t dst, uintptr_t src, uint64_t n)
+{
+	volatile uint8_t *d = (volatile uint8_t *)dst;
+	volatile const uint8_t *s = (volatile const uint8_t *)src;
+	for (uint64_t i = 0; i < n; i++)
+		d[i] = s[i];
+}
+#endif
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
@@ -84,6 +116,23 @@ const char *loader_boot(uintptr_t dtb)
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+#ifdef G0Q
+	con_hex2("INITRD hi", "lo=", rd_start >> 32, "hi=", rd_end >> 32);
+	uintptr_t found = find_payload(rd_start, rd_end);
+	if (!found)
+		return "no SWEETXNU payload in initrd";
+	con_hex2("PAYLOAD", "off=", found - rd_start, "len=", rd_end - found);
+	if ((found & 7) || found + 8 > rd_end) {
+		if (rd_end - found > G0Q_STAGE_MAX)
+			return "payload too big to stage";
+		copy8(G0Q_STAGE, found, rd_end - found);
+		rd_end = G0Q_STAGE + (rd_end - found);
+		rd_start = G0Q_STAGE;
+		con_str("PAYLOAD", "unaligned: staged at 0x820000000");
+	} else {
+		rd_start = found;
+	}
+#endif
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))

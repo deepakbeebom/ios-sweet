@@ -435,3 +435,23 @@ uint32_t ufs_wake(void)
 	return rc;
 }
 #endif
+
+#ifdef G0Q
+/* Read LUN 0 block 1 (GPT header) by DMA straight to physical address pa. */
+uint32_t ufs_dma_test(uint64_t pa)
+{
+	static const uint8_t rd10[10] = { 0x28, 0, 0, 0, 0, 1, 0, 0, 1, 0 };
+	volatile uint8_t *dst = (volatile uint8_t *)pa;
+	uint32_t ocs = 0, st = 0;
+	for (int i = 0; i < 16; i++)
+		dst[i] = 0x5a;
+	uint32_t rc = scsi(0, rd10, sizeof(rd10), (void *)pa, BLOCK, &ocs, &st);
+	char sig[9];
+	for (int i = 0; i < 8; i++)
+		sig[i] = dst[i] >= 32 && dst[i] < 127 ? dst[i] : '.';
+	sig[8] = 0;
+	con_hex2("DMA HIGH", "pa_hi=", (uint32_t)(pa >> 32), "rc=", rc);
+	con_str("DMA HIGH", sig);
+	return rc || dst[0] != 'E' || dst[1] != 'F' || dst[2] != 'I';
+}
+#endif

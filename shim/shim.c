@@ -407,6 +407,39 @@ void g0q_memory(uint64_t dtb);
 void g0q_idle(int row) __attribute__((noreturn));
 void g0q_reserved(uint64_t dtb, uint64_t lo, uint64_t hi);
 
+#ifdef G0Q_M6
+/*
+ * Galaxy S22+ milestone 6: pre-flight checks, then boot XNU.
+ * UFS wake, DMA into the kernel's RAM bank (0x900000000), find/stage the
+ * payload behind the vendor ramdisk, jump. Read-only for storage (the
+ * kernel too, unless the payload's boot-args say ufsrw=1).
+ */
+static void __attribute__((noreturn)) g0q_m6(uint64_t dtb)
+{
+	g0q_display();
+	con_clear(0xff303030U);	/* dark grey: milestone 6 (kernel boot) */
+	con_str("SHIM", "g0q milestone 6: preflight + xnu");
+	g0q_cpu_lines(dtb);
+	con_skip();
+	stage = "ufs";
+	test_ufs();
+	stage = "ufs wake";
+	if (ufs_wake())
+		con_str("UFS", "wake failed (kernel retries)");
+	stage = "dma high";
+	if (ufs_dma_test(0x900000000UL)) {
+		con_str("STOP", "UFS DMA to 0x900000000 failed");
+		g0q_idle(con_cur_row());
+	}
+	con_skip();
+	stage = "loader";
+	const char *why = loader_boot(dtb);
+	con_str("LOADER", why);
+	stage = "idle";
+	g0q_idle(con_cur_row());
+}
+#endif
+
 #ifdef G0Q_M5
 /*
  * Galaxy S22+ milestone 5: wake the UFS device (START STOP UNIT, Active),
@@ -514,7 +547,9 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
-#if defined(G0Q_M5)
+#if defined(G0Q_M6)
+	g0q_m6(dtb);
+#elif defined(G0Q_M5)
 	g0q_m5(dtb);
 #elif defined(G0Q_M4)
 	g0q_m4(dtb);
