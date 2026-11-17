@@ -60,6 +60,7 @@ extern char secondary_entry[];
 
 static const char *stage;	/* set at runtime: no absolute pointers in data */
 static volatile uint64_t sec_mpidr[NR_CPUS];
+static volatile uint64_t sec_midr[NR_CPUS];
 static volatile uint64_t sec_probe[4];	/* CPU1 redistributor write test */
 static volatile uint32_t irq_count, irq_other, irq_last;
 static volatile int irq_src;
@@ -167,6 +168,7 @@ static uintptr_t find_gicr(void);
 
 void secondary_main(uint64_t idx)
 {
+	sec_midr[idx] = rsr("midr_el1");
 	sec_mpidr[idx] = rsr("mpidr_el1") | (1ULL << 63);
 	if (idx == 1) {
 		uintptr_t r = find_gicr();
@@ -197,6 +199,8 @@ static void __attribute__((unused)) test_smp(void)
 		label[3] = '0' + i;
 		if (((uint64_t)i << 8) == self)
 			con_str(label, "is boot cpu");
+		else if (ret[i] == 0 && sec_mpidr[i])
+			con_hex2(label, "mpidr=", (uint32_t)sec_mpidr[i], "midr=", (uint32_t)sec_midr[i]);
 		else
 			con_hex2(label, "ret=", (uint32_t)ret[i], "mpidr=",
 				 (uint32_t)sec_mpidr[i] | (sec_mpidr[i] ? 0 : 0xdead0000));
@@ -371,12 +375,43 @@ static uint32_t to_us(uint64_t ticks)
 }
 
 void g0q_main(uint64_t dtb) __attribute__((noreturn));
+void g0q_display(void);
+void g0q_cpu_lines(uint64_t dtb);
+void g0q_memory(uint64_t dtb);
+void g0q_idle(int row) __attribute__((noreturn));
+
+#ifdef G0Q_M2
+/*
+ * Galaxy S22+ milestone 2: real RAM banks from the live FDT, all 8 cores
+ * through PSCI CPU_ON, GICv3 timer and SGI interrupts. No storage access,
+ * no reset; idles with a heartbeat.
+ */
+static void __attribute__((noreturn)) g0q_m2(uint64_t dtb)
+{
+	g0q_display();
+	con_clear(0xff004020U);	/* dark green: milestone 2 */
+	con_str("SHIM", "g0q milestone 2: mem smp gic");
+	g0q_cpu_lines(dtb);
+	con_skip();
+	stage = "memory";
+	g0q_memory(dtb);
+	con_skip();
+	test_smp();
+	con_skip();
+	test_gic();
+	con_skip();
+	stage = "idle";
+	g0q_idle(con_cur_row());
+}
+#endif
 
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
-#ifdef G0Q_M1
+#if defined(G0Q_M2)
+	g0q_m2(dtb);
+#elif defined(G0Q_M1)
 	g0q_main(dtb);
 #endif
 

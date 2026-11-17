@@ -28,6 +28,11 @@ void con_row(int r)
 	row = r;
 }
 
+int con_cur_row(void)
+{
+	return row;
+}
+
 void con_clear(uint32_t bg)
 {
 	for (int y = 0; y < FB_H; y++) {
