@@ -407,6 +407,33 @@ void g0q_memory(uint64_t dtb);
 void g0q_idle(int row) __attribute__((noreturn));
 void g0q_reserved(uint64_t dtb, uint64_t lo, uint64_t hi);
 
+#ifdef G0Q_M5
+/*
+ * Galaxy S22+ milestone 5: wake the UFS device (START STOP UNIT, Active),
+ * then read LUN 0's GPT and name the big partitions. Read-only; no reset.
+ */
+static void __attribute__((noreturn)) g0q_m5(uint64_t dtb)
+{
+	g0q_display();
+	con_clear(0xff004848U);	/* dark teal: milestone 5 */
+	con_str("SHIM", "g0q milestone 5: ufs wake + gpt");
+	g0q_cpu_lines(dtb);
+	con_skip();
+	stage = "ufs";
+	test_ufs();
+	con_skip();
+	stage = "ufs wake";
+	if (!ufs_wake()) {
+		con_skip();
+		stage = "gpt";
+		gpt_dump();
+	}
+	con_skip();
+	stage = "idle";
+	g0q_idle(con_cur_row());
+}
+#endif
+
 #ifdef G0Q_M4
 /*
  * Galaxy S22+ milestone 4: UFS logical units and sense data (boot 4 got
@@ -487,7 +514,9 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
-#if defined(G0Q_M4)
+#if defined(G0Q_M5)
+	g0q_m5(dtb);
+#elif defined(G0Q_M4)
 	g0q_m4(dtb);
 #elif defined(G0Q_M3)
 	g0q_m3(dtb);

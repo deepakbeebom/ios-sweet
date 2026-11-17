@@ -11,7 +11,7 @@ ROOT=$(cd ../.. && pwd)
 PY="$ROOT/tools-venv/bin/python"
 ZIG="$PY -m ziglang"
 CC="clang -target aarch64-none-elf"
-CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -fno-pie -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra -DG0Q -D${G0Q:-G0Q_M4} ${G0Q_CFLAGS:--DCON_SCALE=2}"
+CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -fno-pie -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-jump-tables -Wall -Wextra -DG0Q -D${G0Q:-G0Q_M5} ${G0Q_CFLAGS:--DCON_SCALE=2}"
 SRCS="start.S shim.c console.c mmu.c fdt.c loader.c ufs.c g0q.c"
 OUT=out-g0q
 mkdir -p $OUT
@@ -58,5 +58,5 @@ fi
 PYTHONSAFEPATH= "$PY" "$ROOT/tools-aosp/mkbootimg.py" --header_version 4 --kernel $OUT/Image \
 	--ramdisk $OUT/ramdisk.bin --os_version 12.0.0 --os_patch_level 2025-10 \
 	--cmdline "" -o $OUT/shim-boot-g0q.img
-cp $OUT/shim-boot-g0q.img $OUT/shim-boot-${G0Q:-G0Q_M4}.img
+cp $OUT/shim-boot-g0q.img $OUT/shim-boot-${G0Q:-G0Q_M5}.img
 ls -l $OUT/Image $OUT/shim-boot-*.img

@@ -193,6 +193,8 @@ static void list_partitions(uint32_t entry_lba, uint32_t nent)
 	}
 }
 
+void gpt_dump(void);
+
 void test_ufs(void)
 {
 	con_str("UFS", "milestone 5 probe (read-only)");
@@ -246,6 +248,13 @@ void test_ufs(void)
 	if (!rc)
 		con_hex2("UFS LUN0", "lastlba=", be32(data), "blk=", be32(data + 4));
 
+	gpt_dump();
+}
+
+/* LUN 0: protective MBR, GPT header and the larger partitions. Read-only. */
+void gpt_dump(void)
+{
+	uint32_t ocs = 0, st = 0, rc;
 	/* READ(10) LBA 0, 2 blocks: protective MBR and the GPT header. */
 	static const uint8_t rd10[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 2, 0 };
 	rc = scsi(0, rd10, sizeof(rd10), data, 2 * BLOCK, &ocs, &st);
@@ -402,5 +411,27 @@ void test_ufs_luns(void)
 		if (!tur(lun, label))
 			capacity(lun);
 	}
+}
+#endif
+
+#ifdef G0Q
+/* Wake the UFS device (boot 5: all LUNs NOT READY until this). Returns 0 on success. */
+uint32_t ufs_wake(void)
+{
+	static const uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };
+	uint32_t ocs = 0, st = 0, rc = 1;
+	if (!ufs_ours) {
+		con_str("UFS WAKE", "no request list: skip");
+		return rc;
+	}
+	for (int i = 0; i < 3; i++) {
+		rc = scsi(WLUN_UFS_DEVICE, ssu, sizeof(ssu), 0, 0, &ocs, &st);
+		if (!rc || !(rc == 4 && st == 2 && (last_sense() >> 16) == 6))
+			break;
+	}
+	result("SSU ACTIVE", rc, ocs, st);
+	if (!rc && tur(0, "LUN0 tur"))
+		rc = 5;
+	return rc;
 }
 #endif
