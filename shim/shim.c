@@ -131,8 +131,10 @@ static void irq_handler(void)
 		irq_other++;
 	if (id == VTIMER_INTID)
 		wsr("cntv_tval_el0", rsr("cntfrq_el0") / 100);	/* 10 ms */
+#ifndef G0Q_M2	/* g0q: physical timer is trapped by Gunyah */
 	else if (id == PTIMER_INTID)
 		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
+#endif
 	wsr("icc_eoir1_el1", iar);
 	isb();
 }
@@ -143,7 +145,12 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 		irq_handler();
 		return;
 	}
+#ifdef G0Q_M2
+	/* Keep the results already on screen; report below them. */
+	con_skip();
+#else
 	con_clear(BLUE);
+#endif
 	switch (slot & 3) {
 	case 0: con_str("PANIC", "SYNC"); break;
 	case 1: con_str("PANIC", "IRQ"); break;
@@ -159,7 +166,14 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
 	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
+#ifdef G0Q_M2
+	/* No reset: on g0q the bootloader would just start the shim again. */
+	con_str("HALT", "VolDown+Power, then VolUp+VolDown");
+	for (;;)
+		__asm__ volatile("wfe");
+#else
 	reset(40);
+#endif
 }
 
 /* ---- SMP ---- */
@@ -273,7 +287,11 @@ static void irq_window(const char *label, uintptr_t r, int src)
 		}
 	__asm__ volatile("msr daifset, #2" ::: "memory");
 	wsr("cntv_ctl_el0", 0);
+#ifndef G0Q_M2
+	/* g0q: Gunyah traps EL1 physical-timer access (undefined instruction,
+	 * ESR EC 0, boot 2): only the virtual timer is ours. */
 	wsr("cntp_ctl_el0", 0);
+#endif
 	isb();
 
 	con_hex2(label, "irqs=", irq_count, "other=", irq_other);
@@ -323,7 +341,11 @@ static void test_gic(void)
 	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
+#ifdef G0Q_M2
+	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << SGI_INTID));
+#else
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
+#endif
 	con_hex2("ENABLE", "was=", en_before, "now=", rd32(r + GICR_ISENABLER0));
 	(void)grp;
 	(void)pri_before;
