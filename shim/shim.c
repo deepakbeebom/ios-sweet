@@ -19,7 +19,11 @@
 #define GICD_BASE		0x17100000UL	/* g0q: SM8450 */
 #define GICR_BASE		0x17180000UL	/* g0q: SM8450 */
 #define GICR_SIZE		0x200000UL	/* g0q: DT redistributor range */
+#ifdef G0Q
+#define GICR_PE_SIZE		0x40000UL	/* g0q: DT redistributor-stride (GICv4 frames), boot 3 */
+#else
 #define GICR_PE_SIZE		0x20000UL
+#endif
 #define GICR_TYPER		0x08
 #define GICR_WAKER		0x14
 #define GICR_SGI		0x10000
@@ -131,7 +135,7 @@ static void irq_handler(void)
 		irq_other++;
 	if (id == VTIMER_INTID)
 		wsr("cntv_tval_el0", rsr("cntfrq_el0") / 100);	/* 10 ms */
-#ifndef G0Q_M2	/* g0q: physical timer is trapped by Gunyah */
+#ifndef G0Q	/* g0q: physical timer is trapped by Gunyah */
 	else if (id == PTIMER_INTID)
 		wsr("cntp_tval_el0", rsr("cntfrq_el0") / 100);
 #endif
@@ -145,7 +149,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 		irq_handler();
 		return;
 	}
-#ifdef G0Q_M2
+#ifdef G0Q
 	/* Keep the results already on screen; report below them. */
 	con_skip();
 #else
@@ -166,7 +170,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	con_hex("X0", regs[0]);
 	con_hex("X1", regs[1]);
 	con_hex("X30", regs[29]);	/* stashed lr is just above the frame */
-#ifdef G0Q_M2
+#ifdef G0Q
 	/* No reset: on g0q the bootloader would just start the shim again. */
 	con_str("HALT", "VolDown+Power, then VolUp+VolDown");
 	for (;;)
@@ -287,7 +291,7 @@ static void irq_window(const char *label, uintptr_t r, int src)
 		}
 	__asm__ volatile("msr daifset, #2" ::: "memory");
 	wsr("cntv_ctl_el0", 0);
-#ifndef G0Q_M2
+#ifndef G0Q
 	/* g0q: Gunyah traps EL1 physical-timer access (undefined instruction,
 	 * ESR EC 0, boot 2): only the virtual timer is ours. */
 	wsr("cntp_ctl_el0", 0);
@@ -341,7 +345,7 @@ static void test_gic(void)
 	uint32_t pri_before = rd32(r + GICR_IPRIORITYR + 16);	/* INTIDs 16..19 */
 	for (int id = 0; id < 32; id++)
 		wr8(r + GICR_IPRIORITYR + id, 0xa0);
-#ifdef G0Q_M2
+#ifdef G0Q
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << SGI_INTID));
 #else
 	wr32(r + GICR_ISENABLER0, (1U << VTIMER_INTID) | (1U << PTIMER_INTID) | (1U << SGI_INTID));
@@ -401,6 +405,36 @@ void g0q_display(void);
 void g0q_cpu_lines(uint64_t dtb);
 void g0q_memory(uint64_t dtb);
 void g0q_idle(int row) __attribute__((noreturn));
+void g0q_reserved(uint64_t dtb, uint64_t lo, uint64_t hi);
+
+#ifdef G0Q_M3
+/*
+ * Galaxy S22+ milestone 3: GICv4 redistributor stride (CPU1 finds its own
+ * frame), reserved regions above 4 GiB, read-only UFS probe. No writes to
+ * storage, no reset; idles with a heartbeat.
+ */
+static void __attribute__((noreturn)) g0q_m3(uint64_t dtb)
+{
+	g0q_display();
+	con_clear(0xff202060U);	/* dark indigo: milestone 3 */
+	con_str("SHIM", "g0q milestone 3: gicr rsv ufs");
+	g0q_cpu_lines(dtb);
+	con_skip();
+	stage = "memory";
+	g0q_memory(dtb);
+	stage = "reserved";
+	g0q_reserved(dtb, 0x100000000UL, 0x10000000000UL);
+	con_skip();
+	test_smp();
+	con_hex2("CPU1 GICR", "found=", (uint32_t)sec_probe[3], "grp=", (uint32_t)sec_probe[1]);
+	con_skip();
+	stage = "ufs";
+	test_ufs();
+	con_skip();
+	stage = "idle";
+	g0q_idle(con_cur_row());
+}
+#endif
 
 #ifdef G0Q_M2
 /*
@@ -431,7 +465,9 @@ void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
 
-#if defined(G0Q_M2)
+#if defined(G0Q_M3)
+	g0q_m3(dtb);
+#elif defined(G0Q_M2)
 	g0q_m2(dtb);
 #elif defined(G0Q_M1)
 	g0q_main(dtb);

@@ -226,6 +226,66 @@ void g0q_memory(uint64_t dtb)
 	con_hex2("MEM", "banks=", banks, "totalMiB=", (uint32_t)(total >> 20));
 }
 
+/*
+ * Every reserved-memory child with a static reg that overlaps [lo, hi):
+ * name, start page (4 KiB units) and size in KiB. These are the regions the
+ * bootloader and firmware keep for themselves; XNU's RAM must avoid them.
+ */
+void g0q_reserved(uint64_t dtb, uint64_t lo, uint64_t hi)
+{
+	if (!dtb || be32(dtb) != 0xd00dfeed)
+		return;
+	uintptr_t p = dtb + be32(dtb + 8);
+	uintptr_t strings = dtb + be32(dtb + 12);
+	int depth = 0, in_rsv = 0, hits = 0, total = 0;
+	uintptr_t child = 0;
+
+	for (int guard = 0; guard < 4000000; guard++) {
+		uint32_t tok = be32(p);
+		p += 4;
+		if (tok == 1) {
+			depth++;
+			if (depth == 2)
+				in_rsv = str_is(p, "reserved-memory");
+			if (depth == 3)
+				child = p;
+			p = (skip_str(p) + 3) & ~3UL;
+		} else if (tok == 2) {
+			if (depth == 2)
+				in_rsv = 0;
+			depth--;
+		} else if (tok == 3) {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			uintptr_t val = p + 8;
+			if (in_rsv && depth == 3 && str_is(strings + nameoff, "reg")) {
+				for (uint32_t o = 0; o + 16 <= len; o += 16) {
+					uint64_t base = (uint64_t)be32(val + o) << 32 | be32(val + o + 4);
+					uint64_t size = (uint64_t)be32(val + o + 8) << 32 | be32(val + o + 12);
+					total++;
+					if (!size || base + size <= lo || base >= hi)
+						continue;
+					hits++;
+					if (hits <= 16) {
+						char name[17];
+						int c = 0;
+						for (; c < 16 && *(volatile char *)(child + c) &&
+						       *(volatile char *)(child + c) != '@'; c++)
+							name[c] = *(volatile char *)(child + c);
+						name[c] = 0;
+						con_hex2(name, "pg=", (uint32_t)(base >> 12), "KiB=", (uint32_t)(size >> 10));
+					}
+				}
+			}
+			p = (val + len + 3) & ~3UL;
+		} else if (tok == 4) {
+			continue;
+		} else {
+			break;
+		}
+	}
+	con_hex2("RSV", "inrange=", hits, "all=", total);
+}
+
 /* Heartbeat from row `row` on: proves we are alive and frames still reach the panel. */
 void __attribute__((noreturn)) g0q_idle(int row)
 {
