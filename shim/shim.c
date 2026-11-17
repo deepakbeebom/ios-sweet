@@ -370,9 +370,15 @@ static uint32_t to_us(uint64_t ticks)
 	return ticks * 10 / 192;	/* 19.2 MHz */
 }
 
+void g0q_main(uint64_t dtb) __attribute__((noreturn));
+
 void shim_main(uint64_t dtb)
 {
 	struct mmu_info mi;
+
+#ifdef G0Q_M1
+	g0q_main(dtb);
+#endif
 
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";

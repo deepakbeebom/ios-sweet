@@ -14,6 +14,8 @@
 
 extern volatile uint32_t *con_fb;
 
+void con_set(uintptr_t base, uint32_t stride_bytes);
+void con_row(int r);
 void con_clear(uint32_t bg);
 void con_skip(void);
 void con_str(const char *label, const char *s);

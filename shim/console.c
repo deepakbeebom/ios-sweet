@@ -5,6 +5,9 @@
 #include "console.h"
 #include "font.h"
 
+static uint32_t con_bg;
+static int row;
+
 #define SCALE		3
 #define CH_W		(8 * SCALE)
 #define CH_H		(16 * SCALE)
@@ -12,13 +15,23 @@
 #define LABEL_COLS	8
 
 volatile uint32_t *con_fb = (volatile uint32_t *)FB_BASE;
-static uint32_t con_bg;
-static int row;
+static uint32_t con_stride = FB_STRIDE / 4;	/* in pixels; con_set() can change it */
+
+void con_set(uintptr_t base, uint32_t stride_bytes)
+{
+	con_fb = (volatile uint32_t *)base;
+	con_stride = stride_bytes / 4;
+}
+
+void con_row(int r)
+{
+	row = r;
+}
 
 void con_clear(uint32_t bg)
 {
 	for (int y = 0; y < FB_H; y++) {
-		volatile uint32_t *line = con_fb + y * (FB_STRIDE / 4);
+		volatile uint32_t *line = con_fb + y * con_stride;
 		for (int x = 0; x < FB_W; x++)
 			line[x] = bg;
 	}
@@ -38,7 +51,7 @@ static void put_char(int col, char ch, uint32_t fg)
 		for (int gx = 0; gx < 8; gx++) {
 			uint32_t c = (g[gy] & (0x80 >> gx)) ? fg : con_bg;
 			for (int sy = 0; sy < SCALE; sy++) {
-				volatile uint32_t *p = con_fb + (y0 + gy * SCALE + sy) * (FB_STRIDE / 4)
+				volatile uint32_t *p = con_fb + (y0 + gy * SCALE + sy) * con_stride
 						       + x0 + gx * SCALE;
 				for (int sx = 0; sx < SCALE; sx++)
 					p[sx] = c;
